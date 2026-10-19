@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>聚會拆帳</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #6b7385;
+  --line: #e1e4ea; --accent: #2f6fed; --accent-text: #ffffff;
+  --pos: #12804a; --neg: #c0392b; --warn-bg: #fff4d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171d; --card: #1e232c; --text: #e8ebf2; --muted: #99a1b3;
+    --line: #2f3643; --accent: #6b9bff; --accent-text: #0d1220;
+    --pos: #4cc98a; --neg: #ff7a6b; --warn-bg: #3b3318;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+header { display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; max-width: 560px; margin: 0 auto; }
+header h1 { font-size: 20px; margin: 0; }
+nav { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
+nav .tabs { display: flex; max-width: 560px; margin: 0 auto; }
+nav button { flex: 1; min-height: 44px; border: 0; background: none; color: var(--muted);
+  font: inherit; font-size: 15px; border-bottom: 3px solid transparent; }
+nav button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+main { max-width: 560px; margin: 0 auto; padding: 16px; }
+.tab { display: none; }
+.tab.on { display: block; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px; margin-bottom: 14px; }
+.card h2 { font-size: 16px; margin: 0 0 10px; }
+.muted { color: var(--muted); font-size: 14px; }
+.pos { color: var(--pos); font-weight: 600; }
+.neg { color: var(--neg); font-weight: 600; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid var(--line); }
+.row:last-child { border-bottom: 0; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+label.f { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+input[type=text], select { width: 100%; min-height: 44px; padding: 8px 10px; font-size: 16px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+button.btn { min-height: 44px; padding: 8px 14px; font: inherit; border: 0; border-radius: 8px;
+  background: var(--accent); color: var(--accent-text); }
+button.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button.btn.danger { background: transparent; color: var(--neg); border: 1px solid var(--neg); }
+button.btn.small { min-height: 36px; padding: 4px 10px; font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chk { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 4px 12px;
+  border: 1px solid var(--line); border-radius: 20px; background: var(--bg); }
+.chk input { width: 18px; height: 18px; }
+.vals .vrow { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.vals .vrow span { flex: 0 0 90px; overflow: hidden; text-overflow: ellipsis; }
+.hint { font-size: 14px; color: var(--accent); min-height: 1em; }
+.vrow .hint { flex: 0 0 auto; min-width: 56px; }
+.pending { background: var(--warn-bg); }
+.btns { display: flex; gap: 8px; flex-shrink: 0; }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: 90%;
+  padding: 10px 16px; border-radius: 10px; background: #222; color: #fff; display: none; z-index: 20; }
+#toast.err { background: #b3261e; }
+</style>
+</head>
+<body>
+<header><h1>聚會拆帳</h1><button class="btn ghost small" id="reload">重新整理</button></header>
+<nav><div class="tabs" id="tabs"></div></nav>
+<main>
+  <section class="tab on" id="tab-overview"></section>
+  <section class="tab" id="tab-expense"></section>
+  <section class="tab" id="tab-payment"></section>
+  <section class="tab" id="tab-people"></section>
+  <section class="tab" id="tab-history"></section>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") e.className = v;
+    else if (k === "value") e.value = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) {
+    if (c === null || c === undefined || c === false) continue;
+    e.append(c);
+  }
+  return e;
+}
+
+// ---- 金鑰與 API ----
+let KEY = new URLSearchParams(location.search).get("k");
+try {
+  if (KEY) sessionStorage.setItem("sbkey", KEY); else KEY = sessionStorage.getItem("sbkey");
+} catch (e) { /* 無痕模式等情況沒有 sessionStorage，只靠網址 */ }
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Key": KEY || "", "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* 非 JSON 回應 */ }
+  if (!res.ok) throw new Error(data.error || "發生錯誤（" + res.status + "）");
+  return data;
+}
+
+let toastTimer;
+function toast(msg, isErr) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = isErr ? "err" : "";
+  t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.style.display = "none"; }, isErr ? 4500 : 2200);
+}
+
+async function act(fn, okMsg) {
+  try {
+    await fn();
+    if (okMsg) toast(okMsg);
+    await refresh(true);
+  } catch (e) { toast(e.message, true); }
+}
+
+// ---- 分頁 ----
+const TABS = [["overview", "總覽"], ["expense", "記帳"], ["payment", "轉帳"], ["people", "朋友"], ["history", "紀錄"]];
+function showTab(id) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.id === "tab-" + id));
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.id === id));
+}
+TABS.forEach(([id, label]) => {
+  $("#tabs").append(h("button", { "data-id": id, onclick: () => showTab(id) }, label));
+});
+
+// ---- 狀態與畫面 ----
+let S = null;
+let formSig = "";
+
+const label = (p) => p.code + ":" + p.name;
+const money = (s) => Number(s).toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+// 金額算式（只顯示用，實際計算以伺服器為準）：支援 + 與 *（也可用 x、×），例如 42+48+52、42*2+48
+function evalExpr(text) {
+  let s = String(text).trim().replace(/＋/g, "+").replace(/[×xX]/g, "*");
+  s = s.replace(/\s*([+*])\s*/g, "$1");
+  if (!s || s.length > 100 || /\s/.test(s)) return null;
+  let total = 0;
+  for (const term of s.split("+")) {
+    if (!term) return null;
+    let prod = 1;
+    for (const f of term.split("*")) {
+      if (!/^(\d+(\.\d+)?|\.\d+)$/.test(f)) return null;
+      prod *= Number(f);
+    }
+    total += prod;
+  }
+  return Number.isFinite(total) ? Math.round(total * 10000) / 10000 : null;
+}
+// 在輸入欄旁邊顯示算式的加總結果（只有輸入含運算符號時才顯示）
+function attachHint(inp) {
+  const hint = h("small", { class: "hint" });
+  const update = () => {
+    const v = /[+*×xX＋]/.test(inp.value) ? evalExpr(inp.value) : null;
+    hint.textContent = v === null ? "" : "= " + money(v);
+  };
+  inp.addEventListener("input", update);
+  update();
+  return hint;
+}
+
+async function refresh(forceForms) {
+  try {
+    S = await api("/api/state");
+  } catch (e) {
+    $("#tab-overview").replaceChildren(h("div", { class: "card" }, h("p", {}, e.message)));
+    return;
+  }
+  renderOverview();
+  renderPeople();
+  renderHistory();
+  const sig = JSON.stringify([S.people, S.groups]);
+  if (forceForms || sig !== formSig) {
+    formSig = sig;
+    buildExpenseForm();
+    buildPaymentForm();
+  }
+}
+
+function renderOverview() {
+  const root = $("#tab-overview");
+  root.replaceChildren();
+
+  const bal = h("div", { class: "card" }, h("h2", {}, "目前餘額"));
+  if (!S.people.length) bal.append(h("p", { class: "muted" }, "還沒有朋友，先到「朋友」分頁新增。"));
+  S.people.forEach((p) => {
+    const v = Number(S.balances[p.name] || 0);
+    const text = v > 0 ? "應收 " + money(v) : v < 0 ? "應付 " + money(-v) : "已結清";
+    bal.append(h("div", { class: "row" }, h("span", {}, label(p)),
+      h("span", { class: v > 0 ? "pos" : v < 0 ? "neg" : "muted" }, text)));
+  });
+  root.append(bal);
+
+  const sug = h("div", { class: "card" }, h("h2", {}, "最少轉帳次數的結清建議"));
+  if (S.suggest_error) sug.append(h("p", { class: "neg" }, S.suggest_error));
+  else if (!S.suggestions.length) sug.append(h("p", { class: "muted" }, "目前不需要轉帳。"));
+  S.suggestions.forEach((t) => {
+    sug.append(h("div", { class: "row" },
+      h("span", {}, t.from + " → " + t.to + "　" + money(t.amount)),
+      h("button", { class: "btn small ghost", onclick: () => {
+        if (!confirm("確定記錄「" + t.from + " 轉 " + money(t.amount) + " 給 " + t.to + "」嗎？\n（收款方確認收到後才會算數）")) return;
+        act(() => api("/api/payment/add", { payer: t.from, payee: t.to, amount: t.amount, note: "" }), "已記錄，等待收款方確認");
+      } }, "我已轉帳")));
+  });
+  root.append(sug);
+
+  const pend = S.payments.filter((p) => !p.confirmed && !p.rejected);
+  if (pend.length) {
+    const card = h("div", { class: "card pending" }, h("h2", {}, "等待收款方確認"));
+    pend.forEach((p) => {
+      card.append(h("div", { class: "row" },
+        h("span", {}, p.payer + " → " + p.payee + "　" + money(p.amount)),
+        h("span", { class: "btns" },
+          h("button", { class: "btn small", onclick: () => {
+            if (!confirm("確定 " + p.payee + " 已經收到 " + p.payer + " 轉的 " + money(p.amount) + " 嗎？")) return;
+            act(() => api("/api/payment/confirm", { id: p.id }), "已確認收款");
+          } }, "確認收到"),
+          h("button", { class: "btn small danger", onclick: () => {
+            if (!confirm("確定 " + p.payee + " 沒有收到 " + p.payer + " 轉的 " + money(p.amount) + " 嗎？\n這筆會標示為「未收到」，不計入餘額。")) return;
+            act(() => api("/api/payment/reject", { id: p.id }), "已標示為未收到");
+          } }, "沒收到"))));
+    });
+    root.append(card);
+  }
+}
+
+function buildExpenseForm() {
+  const root = $("#tab-expense");
+  root.replaceChildren();
+  if (!S.people.length) {
+    root.append(h("div", { class: "card" }, h("p", { class: "muted" }, "請先到「朋友」分頁新增朋友。")));
+    return;
+  }
+  const payer = h("select", {}, S.people.map((p) => h("option", { value: p.name }, label(p))));
+  const desc = h("input", { type: "text", placeholder: "例如：晚餐、KTV", maxlength: "100" });
+  // 金額欄可以直接打算式（如 42+48+52），所以用一般文字鍵盤（手機的數字鍵盤沒有 + 號）
+  const amount = h("input", { type: "text", inputmode: "text", placeholder: "總金額（可填算式 42+48）" });
+  const method = h("select", { onchange: renderVals },
+    h("option", { value: "equal" }, "平均分攤"),
+    h("option", { value: "ratio" }, "依比例分攤"),
+    h("option", { value: "fixed" }, "自訂每人金額"));
+  const vals = {};
+  const valsBox = h("div", { class: "vals" });
+  const checks = S.people.map((p) => h("input", { type: "checkbox", value: p.name, onchange: renderVals }));
+
+  function renderVals() {
+    valsBox.replaceChildren();
+    if (method.value === "equal") return;
+    checks.filter((c) => c.checked).forEach((c) => {
+      const inp = h("input", { type: "text", inputmode: "text", value: vals[c.value] || "",
+        placeholder: method.value === "ratio" ? "權重（如 1、2 或 42+48）" : "分攤金額（可填算式）",
+        oninput: () => { vals[c.value] = inp.value; } });
+      valsBox.append(h("div", { class: "vrow" }, h("span", {}, c.value), inp, attachHint(inp)));
+    });
+  }
+  function setChecked(names) {
+    checks.forEach((c) => { c.checked = names.includes(c.value); });
+    renderVals();
+  }
+
+  const chips = h("div", { class: "chips" }, S.people.map((p, i) =>
+    h("label", { class: "chk" }, checks[i], label(p))));
+  const quick = h("div", { class: "chips" },
+    h("button", { class: "btn small ghost", type: "button", onclick: () => setChecked(S.people.map((p) => p.name)) }, "全選"),
+    h("button", { class: "btn small ghost", type: "button", onclick: () => setChecked([]) }, "清除"),
+    Object.entries(S.groups).map(([g, members]) =>
+      h("button", { class: "btn small ghost", type: "button", onclick: () => setChecked(members) }, "群組：" + g)));
+
+  async function submit() {
+    const participants = checks.filter((c) => c.checked).map((c) => c.value);
+    const body = { payer: payer.value, description: desc.value, amount: amount.value,
+      method: method.value, participants,
+      values: Object.fromEntries(participants.map((n) => [n, vals[n] || ""])) };
+    try {
+      const pv = await api("/api/expense/preview", body);
+      const lines = Object.entries(pv.shares).map(([n, s]) => n + "：" + money(s)).join("\n");
+      if (!confirm("付款人：" + pv.payer + "\n說明：" + pv.description + "\n總金額：" + money(pv.amount) +
+        "\n\n" + lines + "\n\n確定要新增這筆消費嗎？")) return;
+      await api("/api/expense/add", body);
+      toast("已新增消費");
+      await refresh(true);
+      showTab("overview");
+    } catch (e) { toast(e.message, true); }
+  }
+
+  root.append(h("div", { class: "card stack" },
+    h("h2", {}, "新增一筆消費"),
+    h("label", { class: "f" }, "誰先付款", payer),
+    h("label", { class: "f" }, "說明", desc),
+    h("label", { class: "f" }, "總金額", amount, attachHint(amount)),
+    h("label", { class: "f" }, "拆帳方式", method),
+    h("div", { class: "f" }, h("span", { class: "muted" }, "參與分攤的人"), quick, chips),
+    valsBox,
+    h("button", { class: "btn", onclick: submit }, "確認內容後新增")));
+}
+
+function buildPaymentForm() {
+  const root = $("#tab-payment");
+  root.replaceChildren();
+  if (S.people.length < 2) {
+    root.append(h("div", { class: "card" }, h("p", { class: "muted" }, "至少要有兩位朋友才能記錄轉帳。")));
+    return;
+  }
+  const opts = () => S.people.map((p) => h("option", { value: p.name }, label(p)));
+  const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "轉帳金額" });
+  // 選到的兩人剛好是「結清建議」中的一筆時，自動帶入建議金額；沒有對應就清空
+  function fillSuggested() {
+    const t = S.suggestions.find((s) => s.from === payer.value && s.to === payee.value);
+    amount.value = t ? t.amount : "";
+  }
+  const payer = h("select", { onchange: fillSuggested }, opts());
+  const payee = h("select", { onchange: fillSuggested }, opts());
+  payee.selectedIndex = 1;
+  fillSuggested();
+  const note = h("input", { type: "text", placeholder: "備註（可留空）", maxlength: "100" });
+  root.append(h("div", { class: "card stack" },
+    h("h2", {}, "記錄一筆轉帳"),
+    h("p", { class: "muted" }, "登記後要等收款方在「總覽」按「確認收到」，才會計入餘額。"),
+    h("label", { class: "f" }, "轉出方（誰付錢）", payer),
+    h("label", { class: "f" }, "收款方（誰收錢）", payee),
+    h("label", { class: "f" }, "金額", amount),
+    h("label", { class: "f" }, "備註", note),
+    h("button", { class: "btn", onclick: () => {
+      if (!confirm("確定記錄「" + payer.value + " 轉 " + amount.value + " 給 " + payee.value + "」嗎？")) return;
+      act(() => api("/api/payment/add", { payer: payer.value, payee: payee.value, amount: amount.value, note: note.value }),
+        "已記錄，等待收款方確認");
+    } }, "確認內容後記錄")));
+}
+
+function renderPeople() {
+  const root = $("#tab-people");
+  root.replaceChildren();
+
+  const nameInp = h("input", { type: "text", placeholder: "新朋友的名字", maxlength: "30" });
+  const list = h("div", { class: "card" }, h("h2", {}, "朋友名單（前面的數字是代號）"));
+  if (!S.people.length) list.append(h("p", { class: "muted" }, "目前沒有朋友。"));
+  S.people.forEach((p) => {
+    list.append(h("div", { class: "row" }, h("span", {}, label(p)),
+      h("button", { class: "btn small danger", onclick: () => {
+        if (!confirm("確定要刪除「" + p.name + "」嗎？（已有消費或轉帳紀錄的人無法刪除）")) return;
+        act(() => api("/api/person/remove", { name: p.name }), "已刪除");
+      } }, "刪除")));
+  });
+  root.append(
+    h("div", { class: "card stack" }, h("h2", {}, "新增朋友"), nameInp,
+      h("button", { class: "btn", onclick: () => act(() => api("/api/person/add", { name: nameInp.value }), "已新增") }, "新增")),
+    list);
+
+  const gName = h("input", { type: "text", placeholder: "群組名稱（同名會覆蓋）", maxlength: "30" });
+  const gChecks = S.people.map((p) => h("input", { type: "checkbox", value: p.name }));
+  const groups = h("div", { class: "card" }, h("h2", {}, "常用群組"));
+  const entries = Object.entries(S.groups);
+  if (!entries.length) groups.append(h("p", { class: "muted" }, "目前沒有群組。記帳時可一鍵套用整組人。"));
+  entries.forEach(([g, members]) => {
+    groups.append(h("div", { class: "row" }, h("span", {}, g + "：" + members.join("、")),
+      h("button", { class: "btn small danger", onclick: () => {
+        if (!confirm("確定要刪除群組「" + g + "」嗎？")) return;
+        act(() => api("/api/group/delete", { name: g }), "已刪除群組");
+      } }, "刪除")));
+  });
+  root.append(groups);
+  if (S.people.length) {
+    root.append(h("div", { class: "card stack" }, h("h2", {}, "新增/更新群組"), gName,
+      h("div", { class: "chips" }, S.people.map((p, i) => h("label", { class: "chk" }, gChecks[i], label(p)))),
+      h("button", { class: "btn", onclick: () => act(() => api("/api/group/save", {
+        name: gName.value, members: gChecks.filter((c) => c.checked).map((c) => c.value) }), "已儲存群組") }, "儲存群組")));
+  }
+}
+
+function renderHistory() {
+  const root = $("#tab-history");
+  root.replaceChildren();
+
+  const ex = h("div", { class: "card" }, h("h2", {}, "消費紀錄"));
+  if (!S.expenses.length) ex.append(h("p", { class: "muted" }, "目前沒有消費紀錄。"));
+  S.expenses.forEach((e) => {
+    const shares = Object.entries(e.shares).map(([n, s]) => n + " " + money(s)).join("、");
+    ex.append(h("div", { class: "row" },
+      h("div", {}, h("div", {}, "#" + e.id + " " + e.payer + " 付了 " + money(e.amount) + "（" + e.description + "）"),
+        h("div", { class: "muted" }, e.timestamp + "｜" + shares)),
+      h("button", { class: "btn small danger", onclick: () => {
+        if (!confirm("確定要刪除這筆消費「" + e.description + "」（" + money(e.amount) + "）嗎？餘額會自動重算。")) return;
+        act(() => api("/api/expense/delete", { id: e.id }), "已刪除消費");
+      } }, "刪除")));
+  });
+
+  const pay = h("div", { class: "card" }, h("h2", {}, "轉帳紀錄"));
+  if (!S.payments.length) pay.append(h("p", { class: "muted" }, "目前沒有轉帳紀錄。"));
+  S.payments.forEach((p) => {
+    pay.append(h("div", { class: "row" },
+      h("div", {}, h("div", {}, "#" + p.id + " " + p.payer + " → " + p.payee + "　" + money(p.amount)),
+        h("div", { class: "muted" }, p.timestamp + "｜" + (p.confirmed ? "已確認" : p.rejected ? "未收到" : "待確認") + (p.note ? "｜" + p.note : ""))),
+      h("button", { class: "btn small danger", onclick: () => {
+        if (!confirm("確定要刪除這筆轉帳嗎？" + (p.confirmed ? "（已確認的轉帳，刪除後餘額會恢復）" : ""))) return;
+        act(() => api("/api/payment/delete", { id: p.id }), "已刪除轉帳");
+      } }, "刪除")));
+  });
+  root.append(ex, pay);
+}
+
+$("#reload").addEventListener("click", () => refresh(true));
+showTab("overview");
+refresh(true);
+</script>
+</body>
+</html>
